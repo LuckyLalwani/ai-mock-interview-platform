@@ -19,7 +19,36 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import VoiceInterviewModal from '@/components/VoiceInterviewModal';
+import AIInterviewerAvatar from '@/components/AIInterviewerAvatar';
 
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+  message?: string;
+}
+
+interface SpeechRecognitionInstance {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+  }
+}
 export default function InterviewSession() {
   const params = useParams('/interview/:id');
   const id = params?.id;
@@ -37,6 +66,17 @@ export default function InterviewSession() {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [ending, setEnding] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
+  const [voicePhase, setVoicePhase] = useState<
+  'idle' | 'speaking' | 'listening'
+>('idle');
+
+const [transcript, setTranscript] = useState('');
+const [interimTranscript, setInterimTranscript] = useState('');
+
+const recognitionRef =
+  useRef<SpeechRecognitionInstance | null>(null);
+
+const transcriptRef = useRef('');
 
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [cameraPermission, setCameraPermission] = useState<
@@ -161,6 +201,205 @@ export default function InterviewSession() {
       .toString()
       .padStart(2, '0')}`;
   };
+
+  const startListening = useCallback(() => {
+  const SpeechRecognitionAPI =
+    window.SpeechRecognition ||
+    window.webkitSpeechRecognition;
+
+  if (!SpeechRecognitionAPI) {
+    console.warn(
+      'Speech recognition is not supported in this browser.'
+    );
+    setVoicePhase('listening');
+    return;
+  }
+
+  // Stop any previous recognition instance.
+  if (recognitionRef.current) {
+    try {
+      recognitionRef.current.abort();
+    } catch {
+      // Ignore cleanup errors.
+    }
+  }
+
+  const recognition = new SpeechRecognitionAPI();
+
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  transcriptRef.current = '';
+  setTranscript('');
+  setInterimTranscript('');
+
+  recognition.onresult = (event) => {
+    let finalText = transcriptRef.current;
+    let interimText = '';
+
+    for (
+      let i = event.resultIndex;
+      i < event.results.length;
+      i++
+    ) {
+      const result = event.results[i];
+      const text = result[0].transcript;
+
+      if (result.isFinal) {
+        finalText += text + ' ';
+      } else {
+        interimText += text;
+      }
+    }
+
+    transcriptRef.current = finalText.trim();
+
+setTranscript(transcriptRef.current);
+setInterimTranscript(interimText);
+
+// Keep the existing answer state in sync
+setAnswer(
+  `${transcriptRef.current}${
+    interimText ? ` ${interimText}` : ''
+  }`.trim()
+);
+  };
+
+  recognition.onerror = (event) => {
+    console.error(
+      'Speech recognition error:',
+      event.error,
+      event.message || ''
+    );
+
+    // Do not aggressively restart recognition.
+    if (
+      event.error === 'not-allowed' ||
+      event.error === 'service-not-allowed'
+    ) {
+      setError(
+        'Microphone access was denied. Please allow microphone access in your browser.'
+      );
+    }
+
+    setInterimTranscript('');
+    setVoicePhase('listening');
+  };
+
+  recognition.onend = () => {
+    setInterimTranscript('');
+  };
+
+  recognitionRef.current = recognition;
+
+  try {
+    recognition.start();
+    setVoicePhase('listening');
+  } catch (recognitionError) {
+    console.error(
+      'Could not start speech recognition:',
+      recognitionError
+    );
+
+    setVoicePhase('listening');
+  }
+}, []);
+const stopListening = useCallback(() => {
+  if (recognitionRef.current) {
+    try {
+      recognitionRef.current.stop();
+    } catch {
+      // Ignore cleanup errors.
+    }
+
+    recognitionRef.current = null;
+  }
+
+  setInterimTranscript('');
+}, []);
+
+  const speakQuestion = useCallback(
+  (questionText: string) => {
+    if (!window.speechSynthesis) {
+      console.warn('Speech synthesis is not supported.');
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(
+      questionText
+    );
+
+    utterance.lang = 'en-US';
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    utterance.onstart = () => {
+      setVoicePhase('speaking');
+    };
+
+    utterance.onend = () => {
+  startListening();
+};
+
+    utterance.onerror = (event) => {
+      console.error(
+        'Speech synthesis error:',
+        event
+      );
+
+      setVoicePhase('listening');
+    };
+
+    window.speechSynthesis.speak(utterance);
+  },
+  [startListening]
+);
+
+useEffect(() => {
+  return () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch {
+        // Ignore cleanup errors.
+      }
+    }
+
+    window.speechSynthesis?.cancel();
+  };
+}, []);
+
+
+useEffect(() => {
+  if (!cameraEnabled || loading || questions.length === 0) {
+    return;
+  }
+
+  const currentQuestion = questions[currentIndex];
+
+  if (!currentQuestion?.question_text) {
+    return;
+  }
+
+  const timer = window.setTimeout(() => {
+    speakQuestion(currentQuestion.question_text);
+  }, 500);
+
+  return () => {
+    window.clearTimeout(timer);
+    window.speechSynthesis.cancel();
+  };
+}, [
+  cameraEnabled,
+  loading,
+  questions,
+  currentIndex,
+  speakQuestion,
+]);
 
   // Stop camera
   const stopCamera = useCallback(() => {
@@ -324,6 +563,10 @@ export default function InterviewSession() {
     if (index < 0 || index >= questions.length || saving) {
       return;
     }
+    if (cameraEnabled) {
+  stopListening();
+  window.speechSynthesis.cancel();
+}
 
     setSaving(true);
     setError(null);
@@ -393,7 +636,8 @@ export default function InterviewSession() {
 
         setQuestions(updatedQuestions);
       }
-
+      stopListening();
+      window.speechSynthesis.cancel();
       // Stop camera before leaving the interview
       stopCamera();
 
@@ -626,19 +870,12 @@ export default function InterviewSession() {
                 </span>
               </div>
 
-              <button
-                onClick={() => setVoiceMode(true)}
-                disabled={ending}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-100 disabled:opacity-50"
-                title={
-                  cameraEnabled
-                    ? 'Record voice answer while camera is on'
-                    : 'Switch to voice mode'
-                }
-              >
-                <Mic className="h-3.5 w-3.5" />
-                Voice Mode
-              </button>
+              {cameraEnabled && (
+  <span className="inline-flex items-center gap-1.5 rounded-lg bg-primary-50 px-3 py-1.5 text-sm font-medium text-primary-700">
+    <Mic className="h-3.5 w-3.5" />
+    Voice Interview
+  </span>
+)}
 
               <button
                 onClick={() => setShowEndConfirm(true)}
@@ -663,13 +900,147 @@ export default function InterviewSession() {
 
       {/* Question area */}
       <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
-        <div
-          className={`grid gap-6 ${
-            cameraEnabled
-              ? 'lg:grid-cols-[1.5fr_0.8fr]'
-              : ''
-          }`}
+        <div className="space-y-6">
+          {cameraEnabled && (
+            <div className="card p-4 sm:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    AI Interview
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Camera and voice interview
+                  </p>
+                </div>
+
+                {cameraStreamActive && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-error-50 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-error-700">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-error-500" />
+                    Live
+                  </span>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* User camera */}
+                <div className="relative aspect-video overflow-hidden rounded-xl border border-gray-200 bg-gray-900">
+                  {cameraPermission === 'denied' ? (
+                    <div className="flex h-full flex-col items-center justify-center p-4 text-center">
+                      <VideoOff className="mb-2 h-8 w-8 text-gray-400" />
+                      <p className="text-sm text-gray-300">
+                        Camera access denied
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Allow camera access in your browser settings.
+                      </p>
+                    </div>
+                  ) : cameraPermission === 'loading' ? (
+                    <div className="flex h-full items-center justify-center">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin text-white" />
+                      <span className="text-sm text-white/70">
+                        Starting camera...
+                      </span>
+                    </div>
+                  ) : cameraStreamActive ? (
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="h-full w-full object-cover -scale-x-100"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center">
+                      <VideoOff className="h-8 w-8 text-white/30" />
+                    </div>
+                  )}
+
+                  <div className="absolute bottom-3 left-3 rounded-lg bg-black/60 px-3 py-1.5 backdrop-blur-sm">
+                    <span className="text-xs font-medium text-white">
+                      You
+                    </span>
+                  </div>
+                </div>
+
+                {/* AI interviewer */}
+                <div className="relative aspect-video overflow-hidden rounded-xl">
+                  <AIInterviewerAvatar state={voicePhase} />
+                </div>
+              </div>
+
+              {/* Voice transcript */}
+              {(voicePhase === 'listening' ||
+                transcript ||
+                interimTranscript) && (
+                <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Mic className="h-4 w-4 text-primary-600" />
+
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      Your answer
+                    </span>
+
+                    {voicePhase === 'listening' && (
+                      <span className="ml-auto text-xs font-medium text-primary-600">
+                        Listening...
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="min-h-[48px] whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                    {transcript}
+
+                    {interimTranscript && (
+                      <span className="italic text-gray-400">
+                        {' '}
+                        {interimTranscript}
+                      </span>
+                    )}
+
+                    {!transcript && !interimTranscript && (
+                      <span className="text-gray-400">
+                        Start speaking...
+                      </span>
+                    )}
+                  </p>
+                </div>
+              )}
+
+    {/* Camera controls */}
+    <div className="mt-4 flex flex-wrap gap-2">
+      <button
+        onClick={handleCameraToggle}
+        disabled={ending}
+        className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+          cameraStreamActive
+            ? 'bg-gray-900 text-white hover:bg-gray-800'
+            : 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+        }`}
+      >
+        {cameraStreamActive ? (
+          <CameraOff className="h-4 w-4" />
+        ) : (
+          <Camera className="h-4 w-4" />
+        )}
+
+        {cameraStreamActive
+          ? 'Turn off camera'
+          : 'Turn on camera'}
+      </button>
+
+      {cameraDevices.length > 1 && (
+        <button
+          onClick={handleCameraDeviceSwitch}
+          disabled={ending}
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
         >
+          <RefreshCw className="h-4 w-4" />
+          Switch camera
+        </button>
+      )}
+    </div>
+  </div>
+)}
           <div
             className="card p-6 sm:p-8 animate-slide-up"
             key={currentIndex}
@@ -704,7 +1075,6 @@ export default function InterviewSession() {
                 onChange={(e) => setAnswer(e.target.value)}
                 placeholder="Type your answer here. Take your time and be as detailed as you can."
                 className="input-field min-h-[200px] resize-y leading-relaxed"
-                autoFocus
                 disabled={ending}
               />
 
@@ -719,93 +1089,8 @@ export default function InterviewSession() {
             </div>
           </div>
 
-          {/* Camera */}
-          {cameraEnabled && (
-            <div className="card p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                  <Camera className="h-4 w-4 text-primary-600" />
-                  Camera
-                </div>
-
-                {cameraStreamActive && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-error-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-error-700">
-                    <span className="h-2 w-2 rounded-full bg-error-500" />
-                    Recording
-                  </span>
-                )}
-              </div>
-
-              <div
-                className="relative overflow-hidden rounded-xl border border-gray-200 bg-gray-100"
-                style={{ height: '224px' }}
-              >
-                {cameraPermission === 'denied' ? (
-                  <div className="flex h-56 flex-col items-center justify-center bg-gray-100 p-4 text-center text-sm text-gray-600">
-                    <VideoOff className="mb-2 h-8 w-8 text-gray-400" />
-                    Camera access denied. Please enable camera
-                    access in your browser settings.
-                  </div>
-                ) : cameraPermission === 'loading' ? (
-                  <div className="flex h-56 items-center justify-center bg-gray-100 text-sm text-gray-600">
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Requesting camera access...
-                  </div>
-                ) : cameraStreamActive ? (
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="h-full w-full object-cover"
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      height: '100%',
-                      backgroundColor: '#000',
-                    }}
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center bg-gray-100 text-sm text-gray-600">
-                    Camera off
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  onClick={handleCameraToggle}
-                  disabled={ending}
-                  className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    cameraStreamActive
-                      ? 'bg-gray-900 text-white hover:bg-gray-800'
-                      : 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  {cameraStreamActive ? (
-                    <CameraOff className="h-4 w-4" />
-                  ) : (
-                    <Camera className="h-4 w-4" />
-                  )}
-
-                  {cameraStreamActive
-                    ? 'Turn off'
-                    : 'Turn on'}
-                </button>
-
-                {cameraDevices.length > 1 && (
-                  <button
-                    onClick={handleCameraDeviceSwitch}
-                    disabled={ending}
-                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Switch camera
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+          {/* Camera + AI Interviewer */}
+          
         </div>
 
         {/* Error while ending/evaluating */}

@@ -1,0 +1,17 @@
+{
+  "input_size": 445,
+  "num_classes": 7,
+  "classes": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "neutral",
+    "sad",
+    "surprise"
+  ],
+  "sample_rate": 22050,
+  "duration_sec": 3,
+  "n_mfcc": 40,
+  "best_val_acc": 0.7064
+}

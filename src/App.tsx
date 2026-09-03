@@ -11,6 +11,9 @@ import QuickMock from '@/pages/QuickMock';
 import InterviewSession from '@/pages/InterviewSession';
 import InterviewSummary from '@/pages/InterviewSummary';
 import Settings from '@/pages/Settings';
+import EmotionTest from '@/pages/EmotionTest';
+import VoiceTest from '@/pages/VoiceTest';
+import FusionTest from '@/pages/FusionTest';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -42,6 +45,9 @@ function Routes() {
   if (matchRoute('/interview/:id', path)) return <ProtectedRoute><InterviewSession /></ProtectedRoute>;
   if (matchRoute('/summary/:id', path)) return <ProtectedRoute><InterviewSummary /></ProtectedRoute>;
   if (matchRoute('/settings', path)) return <ProtectedRoute><Settings /></ProtectedRoute>;
+  if (path === '/emotion-test') return <ProtectedRoute><EmotionTest /></ProtectedRoute>;
+  if (path === '/voice-test') return <ProtectedRoute><VoiceTest /></ProtectedRoute>;
+  if (path === '/fusion-test') return <ProtectedRoute><FusionTest /></ProtectedRoute>;
 
   return <Landing />;
 }
