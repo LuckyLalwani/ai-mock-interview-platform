@@ -157,6 +157,60 @@ export default function InterviewSummary() {
   const answeredCount = questions.filter(
     (q) => q.answer_text && q.answer_text.trim()
   ).length;
+    const emotionQuestions = questions.filter(
+    (q) =>
+      q.fusion_result &&
+      typeof q.fusion_result === 'object'
+  );
+
+  const averageEmotionScore = (
+    key:
+      | 'stress_score'
+      | 'anxiety_score'
+      | 'nervousness_score'
+      | 'confidence_score'
+  ) => {
+    const values = emotionQuestions
+      .map((q) => {
+        const fusion = q.fusion_result as Record<string, unknown>;
+        const value = fusion[key];
+
+        return typeof value === 'number' ? value : null;
+      })
+      .filter((value): value is number => value !== null);
+
+    if (values.length === 0) return null;
+
+    return (
+      values.reduce((sum, value) => sum + value, 0) /
+      values.length
+    );
+  };
+
+  const averageStress = averageEmotionScore('stress_score');
+  const averageAnxiety = averageEmotionScore('anxiety_score');
+  const averageNervousness =
+    averageEmotionScore('nervousness_score');
+  const averageConfidence =
+    averageEmotionScore('confidence_score');
+
+  const dominantEmotions = emotionQuestions
+    .map((q) => {
+      const fusion = q.fusion_result as Record<string, unknown>;
+      return typeof fusion.dominant_emotion === 'string'
+        ? fusion.dominant_emotion
+        : null;
+    })
+    .filter((emotion): emotion is string => emotion !== null);
+
+  const overallDominantEmotion =
+    dominantEmotions.length > 0
+      ? dominantEmotions.sort(
+          (a, b) =>
+            dominantEmotions.filter((e) => e === b).length -
+            dominantEmotions.filter((e) => e === a).length
+        )[0]
+      : null;
 
   const getScoreLabel = (score: number | null) => {
     if (score === null) return 'Not evaluated';
@@ -279,6 +333,77 @@ export default function InterviewSummary() {
           </div>
         </div>
       </div>
+      
+            {/* Overall Emotion Analysis */}
+      {emotionQuestions.length > 0 && (
+        <div className="card mt-6 p-6">
+          <div className="mb-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
+              Emotion Analysis
+            </p>
+
+            <h2 className="mt-1 text-base font-semibold text-gray-900">
+              Interview presence
+            </h2>
+
+            {overallDominantEmotion && (
+              <p className="mt-1 text-sm text-gray-500">
+                Dominant emotion:{' '}
+                <span className="font-semibold capitalize text-gray-700">
+                  {overallDominantEmotion}
+                </span>
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg bg-error-50 p-4">
+              <p className="text-xs text-gray-500">Stress</p>
+              <p className="mt-1 text-xl font-bold text-gray-900">
+                {averageStress !== null
+                  ? averageStress.toFixed(1)
+                  : '—'}
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-primary-50 p-4">
+              <p className="text-xs text-gray-500">Anxiety</p>
+              <p className="mt-1 text-xl font-bold text-gray-900">
+                {averageAnxiety !== null
+                  ? averageAnxiety.toFixed(1)
+                  : '—'}
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-accent-50 p-4">
+              <p className="text-xs text-gray-500">
+                Nervousness
+              </p>
+              <p className="mt-1 text-xl font-bold text-gray-900">
+                {averageNervousness !== null
+                  ? averageNervousness.toFixed(1)
+                  : '—'}
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-gray-50 p-4">
+              <p className="text-xs text-gray-500">
+                Confidence
+              </p>
+              <p className="mt-1 text-xl font-bold text-gray-900">
+                {averageConfidence !== null
+                  ? averageConfidence.toFixed(1)
+                  : '—'}
+              </p>
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-gray-400">
+            Based on emotion analysis captured during your
+            camera-enabled answers.
+          </p>
+        </div>
+      )}
 
       {/* Overall AI Feedback */}
       {overallFeedback && (

@@ -20,6 +20,14 @@ import {
 } from 'lucide-react';
 import VoiceInterviewModal from '@/components/VoiceInterviewModal';
 import AIInterviewerAvatar from '@/components/AIInterviewerAvatar';
+import {
+  predictFace,
+  predictVoice,
+  fuseEmotions,
+  type EmotionPrediction,
+  type FusionResult,
+} from '@/lib/emotion';
+
 
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
@@ -72,6 +80,23 @@ export default function InterviewSession() {
 
 const [transcript, setTranscript] = useState('');
 const [interimTranscript, setInterimTranscript] = useState('');
+const [faceEmotion, setFaceEmotion] =
+  useState<EmotionPrediction | null>(null);
+
+const [voiceEmotion, setVoiceEmotion] =
+  useState<EmotionPrediction | null>(null);
+
+const [fusionResult, setFusionResult] =
+  useState<FusionResult | null>(null);
+
+const [isRecordingVoice, setIsRecordingVoice] =
+  useState(false);
+
+const mediaRecorderRef =
+  useRef<MediaRecorder | null>(null);
+
+const audioChunksRef =
+  useRef<Blob[]>([]);
 
 const recognitionRef =
   useRef<SpeechRecognitionInstance | null>(null);
@@ -202,6 +227,118 @@ const transcriptRef = useRef('');
       .padStart(2, '0')}`;
   };
 
+  const startVoiceEmotionRecording = useCallback(async () => {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    console.warn('Audio recording is not supported in this browser.');
+    return;
+  }
+
+  if (mediaRecorderRef.current) {
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    });
+
+    const recorder = new MediaRecorder(stream, {
+      mimeType: 'audio/webm',
+    });
+
+    audioChunksRef.current = [];
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
+      }
+    };
+
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop());
+
+      const audioBlob = new Blob(
+        audioChunksRef.current,
+        { type: 'audio/webm' }
+      );
+
+      mediaRecorderRef.current = null;
+      setIsRecordingVoice(false);
+
+      if (audioBlob.size === 0) {
+        return;
+      }
+
+      try {
+        const result = await predictVoice(audioBlob);
+
+        if (result.success) {
+          setVoiceEmotion(result);
+        }
+      } catch (emotionError) {
+        console.error(
+          'Voice emotion prediction error:',
+          emotionError
+        );
+      }
+    };
+
+    mediaRecorderRef.current = recorder;
+
+    recorder.start();
+    setIsRecordingVoice(true);
+  } catch (recordingError) {
+    console.error(
+      'Voice emotion recording error:',
+      recordingError
+    );
+  }
+}, []);
+
+useEffect(() => {
+  if (
+    !faceEmotion?.success ||
+    !faceEmotion.predictions ||
+    !voiceEmotion?.success ||
+    !voiceEmotion.predictions
+  ) {
+    return;
+  }
+
+  const runFusion = async () => {
+    try {
+      const result = await fuseEmotions(
+        faceEmotion.predictions!,
+        voiceEmotion.predictions!
+      );
+
+      if (result.success) {
+        setFusionResult(result);
+      }
+    } catch (fusionError) {
+      console.error(
+        'Emotion fusion error:',
+        fusionError
+      );
+    }
+  };
+
+  runFusion();
+}, [
+  faceEmotion,
+  voiceEmotion,
+]);
+  const stopVoiceEmotionRecording = useCallback(() => {
+  const recorder = mediaRecorderRef.current;
+
+  if (!recorder) {
+    return;
+  }
+
+  if (recorder.state !== 'inactive') {
+    recorder.stop();
+  }
+}, []);
   const startListening = useCallback(() => {
   const SpeechRecognitionAPI =
     window.SpeechRecognition ||
@@ -293,10 +430,14 @@ setAnswer(
 
   recognitionRef.current = recognition;
 
-  try {
-    recognition.start();
-    setVoicePhase('listening');
-  } catch (recognitionError) {
+try {
+  recognition.start();
+  setVoicePhase('listening');
+
+  if (cameraEnabled) {
+    startVoiceEmotionRecording();
+  }
+} catch (recognitionError) {
     console.error(
       'Could not start speech recognition:',
       recognitionError
@@ -304,7 +445,12 @@ setAnswer(
 
     setVoicePhase('listening');
   }
-}, []);
+}, [
+  cameraEnabled,
+  startVoiceEmotionRecording,
+]);
+
+
 const stopListening = useCallback(() => {
   if (recognitionRef.current) {
     try {
@@ -457,6 +603,75 @@ useEffect(() => {
     }
   }, [cameraEnabled, selectedDeviceId]);
 
+  const captureFaceEmotion = useCallback(async () => {
+  if (!videoRef.current || !cameraStreamActive) {
+    return;
+  }
+
+  const video = videoRef.current;
+
+  if (video.readyState < 2) {
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    return;
+  }
+
+  context.drawImage(
+    video,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, 'image/jpeg', 0.85);
+  });
+
+  if (!blob) {
+    return;
+  }
+
+  try {
+    const result = await predictFace(blob);
+
+    if (result.success) {
+      setFaceEmotion(result);
+    }
+  } catch (emotionError) {
+    console.error(
+      'Facial emotion prediction error:',
+      emotionError
+    );
+  }
+}, [cameraStreamActive]);
+
+  useEffect(() => {
+  if (!cameraEnabled || !cameraStreamActive) {
+    return;
+  }
+
+  const interval = window.setInterval(() => {
+    captureFaceEmotion();
+  }, 5000);
+
+  return () => {
+    window.clearInterval(interval);
+  };
+}, [
+  cameraEnabled,
+  cameraStreamActive,
+  captureFaceEmotion,
+]);
+
   // Camera lifecycle
   useEffect(() => {
     if (!cameraEnabled) {
@@ -495,27 +710,32 @@ useEffect(() => {
 
   // Save answer
   const saveAnswer = useCallback(
-    async (questionId: string, answerText: string) => {
-      const trimmedAnswer = answerText.trim();
+  async (questionId: string, answerText: string) => {
+    const trimmedAnswer = answerText.trim();
 
-      const { error: saveError } = await supabase
-        .from('interview_questions')
-        .update({
-          answer_text: answerText,
-          answer_status: trimmedAnswer ? 'answered' : 'unanswered',
-          answered_at: trimmedAnswer
-            ? new Date().toISOString()
-            : null,
-        })
-        .eq('id', questionId);
+    const { error: saveError } = await supabase
+      .from('interview_questions')
+      .update({
+        answer_text: answerText,
+        answer_status: trimmedAnswer ? 'answered' : 'unanswered',
+        answered_at: trimmedAnswer
+          ? new Date().toISOString()
+          : null,
 
-      if (saveError) {
-        console.error('Answer save error:', saveError);
-        throw new Error('Failed to save your answer.');
-      }
-    },
-    []
-  );
+        // Emotion analysis captured for this answer
+        face_emotion: faceEmotion,
+        voice_emotion: voiceEmotion,
+        fusion_result: fusionResult,
+      })
+      .eq('id', questionId);
+
+    if (saveError) {
+      console.error('Answer save error:', saveError);
+      throw new Error('Failed to save your answer.');
+    }
+  },
+  [faceEmotion, voiceEmotion, fusionResult]
+);
 
   // Camera toggle
   const handleCameraToggle = async () => {
@@ -565,6 +785,7 @@ useEffect(() => {
     }
     if (cameraEnabled) {
   stopListening();
+  stopVoiceEmotionRecording();
   window.speechSynthesis.cancel();
 }
 
@@ -1005,7 +1226,117 @@ useEffect(() => {
                   </p>
                 </div>
               )}
+              {faceEmotion?.success && faceEmotion.emotion && (
+  <div className="mt-4 rounded-xl border border-primary-100 bg-primary-50 p-4">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
+          Facial Emotion
+        </p>
+        <p className="mt-1 text-lg font-semibold capitalize text-gray-900">
+          {faceEmotion.emotion}
+        </p>
+      </div>
 
+      {typeof faceEmotion.confidence === 'number' && (
+        <div className="text-right">
+          <p className="text-xs text-gray-500">
+            Confidence
+          </p>
+          <p className="text-sm font-semibold text-gray-700">
+            {(faceEmotion.confidence * 100).toFixed(1)}%
+          </p>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+{voiceEmotion?.success && voiceEmotion.emotion && (
+  <div className="mt-4 rounded-xl border border-accent-100 bg-accent-50 p-4">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-accent-600">
+          Voice Emotion
+        </p>
+
+        <p className="mt-1 text-lg font-semibold capitalize text-gray-900">
+          {voiceEmotion.emotion}
+        </p>
+      </div>
+
+      {typeof voiceEmotion.confidence === 'number' && (
+        <div className="text-right">
+          <p className="text-xs text-gray-500">
+            Confidence
+          </p>
+
+          <p className="text-sm font-semibold text-gray-700">
+            {(voiceEmotion.confidence * 100).toFixed(1)}%
+          </p>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+{fusionResult?.success && (
+  <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+    <div className="mb-3 flex items-center justify-between">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Emotion Analysis
+        </p>
+
+        {fusionResult.dominant_emotion && (
+          <p className="mt-1 text-lg font-semibold capitalize text-gray-900">
+            {fusionResult.dominant_emotion}
+          </p>
+        )}
+      </div>
+    </div>
+
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="rounded-lg bg-error-50 p-3">
+        <p className="text-xs text-gray-500">
+          Stress
+        </p>
+
+        <p className="mt-1 text-lg font-semibold text-gray-900">
+          {fusionResult.stress_score?.toFixed(1) ?? '--'}
+        </p>
+      </div>
+
+      <div className="rounded-lg bg-primary-50 p-3">
+        <p className="text-xs text-gray-500">
+          Anxiety
+        </p>
+
+        <p className="mt-1 text-lg font-semibold text-gray-900">
+          {fusionResult.anxiety_score?.toFixed(1) ?? '--'}
+        </p>
+      </div>
+
+      <div className="rounded-lg bg-accent-50 p-3">
+        <p className="text-xs text-gray-500">
+          Nervousness
+        </p>
+
+        <p className="mt-1 text-lg font-semibold text-gray-900">
+          {fusionResult.nervousness_score?.toFixed(1) ?? '--'}
+        </p>
+      </div>
+
+      <div className="rounded-lg bg-gray-50 p-3">
+        <p className="text-xs text-gray-500">
+          Confidence
+        </p>
+
+        <p className="mt-1 text-lg font-semibold text-gray-900">
+          {fusionResult.confidence_score?.toFixed(1) ?? '--'}
+        </p>
+      </div>
+    </div>
+  </div>
+)}
     {/* Camera controls */}
     <div className="mt-4 flex flex-wrap gap-2">
       <button
