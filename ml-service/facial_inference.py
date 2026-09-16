@@ -1,126 +1,483 @@
 # ============================================================
 # FACIAL INFERENCE
-# Loads trained EfficientNetB0 model
-# Input : cropped face image (numpy RGB)
-# Output: dict {emotion: confidence}
+# ViT-Base-Patch16-224 facial emotion model
+#
+# Input  : cropped face image (numpy RGB)
+# Output : dict {emotion: confidence}
 # ============================================================
 
 import torch
 import torch.nn as nn
 import numpy as np
-import timm
 import cv2
+
 from pathlib import Path
+from transformers import AutoModelForImageClassification
 
 
-# ── Must match Notebook 1 architecture exactly ───────────────
+# ============================================================
+# MODEL CONFIGURATION
+# ============================================================
+
+MODEL_NAME = "trpakov/vit-face-expression"
+
+TARGET_CLASSES = [
+    "anger",
+    "disgust",
+    "fear",
+    "happiness",
+    "sadness",
+    "surprise",
+    "neutral",
+]
+
+
+# ============================================================
+# ViT MODEL
+# Must match the friend's training notebook
+# ============================================================
+
 class FacialEmotionModel(nn.Module):
-    def __init__(self, num_classes=7, dropout=0.4):
+
+    def __init__(self, num_classes=7):
+
         super().__init__()
-        self.backbone   = timm.create_model(
-            'efficientnet_b0', pretrained=False, num_classes=0
-        )
-        feat_dim        = self.backbone.num_features   # 1280
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(feat_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(dropout / 2),
-            nn.Linear(512, num_classes)
+
+        self.vit = AutoModelForImageClassification.from_pretrained(
+            MODEL_NAME,
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True
         )
 
-    def forward(self, x):
-        return self.classifier(self.backbone(x))
+    def forward(self, pixel_values):
 
+        outputs = self.vit(
+            pixel_values=pixel_values
+        )
+
+        return outputs.logits
+
+
+# ============================================================
+# FACIAL INFERENCE
+# ============================================================
 
 class FacialInference:
 
-    # ImageNet normalization — same as Notebook 1 training
-    MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    # ImageNet normalization
+    MEAN = np.array(
+        [0.485, 0.456, 0.406],
+        dtype=np.float32
+    )
 
-    def __init__(self, model_path: str, classes_path: str):
-        print("\n[FacialInference] ── Initializing ──────────────────")
+    STD = np.array(
+        [0.229, 0.224, 0.225],
+        dtype=np.float32
+    )
 
-        # ── Validate paths ────────────────────────────────────
-        for label, path in [("model",   model_path),
-                             ("classes", classes_path)]:
-            if not Path(path).exists():
-                raise FileNotFoundError(
-                    f"[FacialInference] ❌ {label} file not found: {path}\n"
-                    f"  Make sure you copied it from Google Drive to models/"
-                )
-            size_mb = Path(path).stat().st_size / 1e6
-            print(f"  ✅ {label} file found: {path}  ({size_mb:.2f} MB)")
+    IMAGE_SIZE = 224
 
-        # ── Device ────────────────────────────────────────────
-        self.device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu'
+    def __init__(
+        self,
+        model_path: str,
+        classes_path: str
+    ):
+
+        print(
+            "\n[FacialInference] "
+            "── Initializing ViT ─────────────────"
         )
-        print(f"  Device: {self.device}")
 
-        # ── Load classes ──────────────────────────────────────
-        self.classes = np.load(classes_path, allow_pickle=True).tolist()
-        print(f"  Classes ({len(self.classes)}): {self.classes}")
+        # ====================================================
+        # Validate model path
+        # ====================================================
 
-        # ── Load model ────────────────────────────────────────
-        try:
-            self.model = FacialEmotionModel(num_classes=len(self.classes))
-            state_dict = torch.load(model_path, map_location=self.device)
-            self.model.load_state_dict(state_dict)
-            self.model.to(self.device).eval()
-            print(f"  ✅ Model loaded successfully")
-        except Exception as e:
-            raise RuntimeError(
-                f"[FacialInference] ❌ Failed to load model weights: {e}\n"
-                f"  Common cause: model architecture mismatch with saved weights"
+        if not Path(model_path).exists():
+
+            raise FileNotFoundError(
+                f"[FacialInference] ❌ "
+                f"Model file not found: {model_path}\n"
+                f"Make sure the new ViT model is inside models/"
             )
 
-        # ── Warmup forward pass ───────────────────────────────
+        model_size_mb = (
+            Path(model_path).stat().st_size / 1e6
+        )
+
+        print(
+            f"  ✅ model file found: "
+            f"{model_path} "
+            f"({model_size_mb:.2f} MB)"
+        )
+
+
+        # ====================================================
+        # Validate classes file
+        # ====================================================
+
+        if not Path(classes_path).exists():
+
+            raise FileNotFoundError(
+                f"[FacialInference] ❌ "
+                f"Classes file not found: {classes_path}"
+            )
+
+        print(
+            f"  ✅ classes file found: "
+            f"{classes_path}"
+        )
+
+
+        # ====================================================
+        # Device
+        # ====================================================
+
+        self.device = torch.device(
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+
+        print(
+            f"  Device: {self.device}"
+        )
+
+
+        # ====================================================
+        # Load classes
+        # ====================================================
+
+        loaded_classes = np.load(
+            classes_path,
+            allow_pickle=True
+        ).tolist()
+
+        print(
+            f"  Classes from file: "
+            f"{loaded_classes}"
+        )
+
+
+        # ====================================================
+        # Validate class mapping
+        # ====================================================
+
+        if list(loaded_classes) != TARGET_CLASSES:
+
+            raise ValueError(
+                "[FacialInference] ❌ "
+                "Class mapping mismatch.\n"
+                f"Expected: {TARGET_CLASSES}\n"
+                f"Found:    {loaded_classes}"
+            )
+
+        self.classes = TARGET_CLASSES
+
+
+        # ====================================================
+        # Load ViT model
+        # ====================================================
+
         try:
-            dummy = torch.zeros(1, 3, 224, 224).to(self.device)
-            with torch.no_grad():
-                out = self.model(dummy)
-            assert out.shape == (1, len(self.classes)), \
-                f"Expected (1,{len(self.classes)}), got {out.shape}"
-            print(f"  ✅ Warmup forward pass OK — output shape: {out.shape}")
+
+            print(
+                f"  Loading base architecture: "
+                f"{MODEL_NAME}"
+            )
+
+            self.model = FacialEmotionModel(
+                num_classes=len(self.classes)
+            )
+
+            state_dict = torch.load(
+                model_path,
+                map_location=self.device,
+                weights_only=True
+            )
+
+            self.model.load_state_dict(
+                state_dict
+            )
+
+            self.model.to(
+                self.device
+            )
+
+            self.model.eval()
+
+            print(
+                "  ✅ ViT model weights loaded"
+            )
+
         except Exception as e:
-            raise RuntimeError(f"[FacialInference] ❌ Warmup failed: {e}")
 
-        print("[FacialInference] ── Ready ──────────────────────────\n")
+            raise RuntimeError(
+                "[FacialInference] ❌ "
+                f"Failed to load ViT model: {e}"
+            )
 
-    def preprocess(self, face_rgb: np.ndarray) -> torch.Tensor:
+
+        # ====================================================
+        # Warmup
+        # ====================================================
+
+        try:
+
+            dummy = torch.zeros(
+                1,
+                3,
+                self.IMAGE_SIZE,
+                self.IMAGE_SIZE,
+                device=self.device
+            )
+
+            with torch.no_grad():
+
+                output = self.model(
+                    dummy
+                )
+
+            expected_shape = (
+                1,
+                len(self.classes)
+            )
+
+            if tuple(output.shape) != expected_shape:
+
+                raise RuntimeError(
+                    f"Expected output "
+                    f"{expected_shape}, "
+                    f"got {tuple(output.shape)}"
+                )
+
+            print(
+                f"  ✅ Warmup forward pass OK "
+                f"— output shape: {output.shape}"
+            )
+
+        except Exception as e:
+
+            raise RuntimeError(
+                "[FacialInference] ❌ "
+                f"Warmup failed: {e}"
+            )
+
+
+        print(
+            "[FacialInference] "
+            "── ViT Ready ─────────────────────────\n"
+        )
+
+
+    # ========================================================
+    # PREPROCESSING
+    # ========================================================
+
+    def preprocess(
+        self,
+        face_rgb: np.ndarray
+    ) -> torch.Tensor:
+
         """
-        face_rgb : H×W×3 numpy uint8 RGB (already cropped)
-        Returns  : (1, 3, 224, 224) float32 tensor
+        face_rgb:
+            H × W × 3 numpy RGB uint8 image
+
+        Returns:
+            (1, 3, 224, 224) tensor
         """
-        img = cv2.resize(face_rgb, (224, 224)).astype(np.float32) / 255.0
-        img = (img - self.MEAN) / self.STD
-        img = img.transpose(2, 0, 1)            # HWC → CHW
-        return torch.tensor(img, dtype=torch.float32).unsqueeze(0).to(self.device)
+
+        if face_rgb is None:
+            raise ValueError(
+                "face_rgb is None"
+            )
+
+        if face_rgb.size == 0:
+            raise ValueError(
+                "face_rgb is empty"
+            )
+
+
+        # Resize exactly as friend's notebook
+        img = cv2.resize(
+            face_rgb,
+            (
+                self.IMAGE_SIZE,
+                self.IMAGE_SIZE
+            )
+        )
+
+
+        # Convert uint8 → float32 [0,1]
+        img = img.astype(
+            np.float32
+        ) / 255.0
+
+
+        # ImageNet normalization
+        img = (
+            img - self.MEAN
+        ) / self.STD
+
+
+        # HWC → CHW
+        img = img.transpose(
+            2,
+            0,
+            1
+        )
+
+
+        tensor = torch.tensor(
+            img,
+            dtype=torch.float32
+        ).unsqueeze(0)
+
+
+        return tensor.to(
+            self.device
+        )
+
+
+    # ========================================================
+    # PREDICTION
+    # ========================================================
 
     @torch.no_grad()
-    def predict(self, face_rgb: np.ndarray) -> dict:
+    def predict(
+        self,
+        face_rgb: np.ndarray
+    ) -> dict:
+
         """
-        Returns emotion probability dict.
+        Returns:
+
+        {
+            "anger": ...,
+            "disgust": ...,
+            "fear": ...,
+            "happiness": ...,
+            "sadness": ...,
+            "surprise": ...,
+            "neutral": ...
+        }
+
         Returns all-zero dict if face is invalid.
         """
-        if face_rgb is None or face_rgb.size == 0:
-            return {c: 0.0 for c in self.classes}
+
+        if (
+            face_rgb is None
+            or face_rgb.size == 0
+        ):
+
+            return {
+                c: 0.0
+                for c in self.classes
+            }
+
 
         try:
-            tensor = self.preprocess(face_rgb)
-            logits = self.model(tensor)
-            probs  = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
 
-            # Validate output
-            if not np.isfinite(probs).all():
-                print("[FacialInference] ⚠️  Non-finite probabilities — returning zeros")
-                return {c: 0.0 for c in self.classes}
+            # =================================================
+            # Original image
+            # =================================================
 
-            return dict(zip(self.classes, probs.tolist()))
+            tensor = self.preprocess(
+                face_rgb
+            )
+
+
+            # =================================================
+            # Original prediction
+            # =================================================
+
+            logits = self.model(
+                tensor
+            )
+
+            probs_original = torch.softmax(
+                logits,
+                dim=1
+            )
+
+
+            # =================================================
+            # Horizontal flip TTA
+            # Exactly as friend's notebook
+            # =================================================
+
+            flipped_tensor = torch.flip(
+                tensor,
+                dims=[3]
+            )
+
+            logits_flip = self.model(
+                flipped_tensor
+            )
+
+            probs_flip = torch.softmax(
+                logits_flip,
+                dim=1
+            )
+
+
+            # =================================================
+            # Average original + flipped predictions
+            # =================================================
+
+            probs = (
+                probs_original
+                +
+                probs_flip
+            ) / 2.0
+
+
+            probs = (
+                probs
+                .squeeze(0)
+                .cpu()
+                .numpy()
+            )
+
+
+            # =================================================
+            # Validate probabilities
+            # =================================================
+
+            if not np.isfinite(
+                probs
+            ).all():
+
+                print(
+                    "[FacialInference] "
+                    "⚠️ Non-finite probabilities"
+                )
+
+                return {
+                    c: 0.0
+                    for c in self.classes
+                }
+
+
+            # =================================================
+            # Return emotion probabilities
+            # =================================================
+
+            return dict(
+                zip(
+                    self.classes,
+                    probs.tolist()
+                )
+            )
+
 
         except Exception as e:
-            print(f"[FacialInference] ⚠️  Prediction error: {e}")
-            return {c: 0.0 for c in self.classes}
+
+            print(
+                "[FacialInference] "
+                f"⚠️ Prediction error: {e}"
+            )
+
+            return {
+                c: 0.0
+                for c in self.classes
+            }

@@ -1,43 +1,175 @@
-# Dependencies
-node_modules/
+# =========================================================
+# Environment / Secrets
+# =========================================================
 
-# Build output
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Keep example environment files
+!.env.example
+
+
+# =========================================================
+# Node.js / React / Vite
+# =========================================================
+
+node_modules/
 dist/
 build/
 
-# Environment variables
-.env
-.env.*
-!.env.example
-
-# Local Supabase
-.supabase/
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-.idea/
-
-# Temporary files
-*.tmp
-*.temp
+# Vite
+.vite/
 *.timestamp-*.mjs
 
-# Local ML model files
-ml-service/models/**/*.pt
-ml-service/models/**/*.pkl
-ml-service/models/**/*.safetensors
+# npm
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# =========================================================
+# Python / ML Service
+# =========================================================
+
+# Virtual environments
+# Python virtual environments
+.venv/
+.proctor-venv/
+ml-service/.venv/
+ml-service/.proctor-venv/
+venv/
+env/
+ENV/
 
 # Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Python build files
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.pyright/
+
+# Jupyter
+.ipynb_checkpoints/
+
+
+# =========================================================
+# ML / Model Generated Files
+# =========================================================
+
+# Pickle / serialized artifacts generated locally
+*.pkl
+
+# Temporary ML files
+temp_*.wav
+temp_*.webm
+temp_*.jpg
+temp_*.png
+
+# Training outputs / checkpoints
+checkpoints/
+runs/
+wandb/
+
+# TensorFlow / Keras
+*.h5
+*.keras
+
+# ONNX
+*.onnx
+
+
+# =========================================================
+# Local Test Files
+# =========================================================
+
+# Uncomment these if you DON'T want test media in Git
+# test_face.jpg
+# test_two_faces.jpg
+# test_voice.wav
+# harvard.wav
+
+
+# =========================================================
+# Supabase
+# =========================================================
+
+# Local Supabase generated files
+supabase/.temp/
+
+# Local Supabase database volumes
+supabase/.branches/
+supabase/.gitignore
+
+# Supabase local config/generated files
+.supabase/
+
+
+# =========================================================
+# Bolt / AI-generated project files
+# =========================================================
+
+.bolt/
+
+
+# =========================================================
+# OS Files
+# =========================================================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# =========================================================
+# IDE / Editors
+# =========================================================
+
+.vscode/
+.idea/
+
+*.swp
+*.swo
+*~
+
+
+# =========================================================
+# Logs
+# =========================================================
+
+*.log
+logs/
+
+
+# =========================================================
+# Temporary files
+# =========================================================
+
+*.tmp
+*.temp
+*.bak
+
+# Large ML Model Files
+ml-service/models/*.pth
+ml-service/models/*.safetensors
+ml-service/models/*.pkl
+
+ml-service/models/text_emotion_model/model.safetensors

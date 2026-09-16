@@ -46,14 +46,12 @@ def load_models():
     from voice_inference import VoiceInference
 
     facial_model = FacialInference(
-        str(MODELS_DIR / "facial_emotion_model.pt"),
-        str(MODELS_DIR / "facial_emotion_classes.npy"),
-    )
+        str(MODELS_DIR / "best_facial_model.pth"),
+        str(MODELS_DIR / "vit_facial_emotion_classes.npy"),
+    )   
 
     voice_model = VoiceInference(
-        str(MODELS_DIR / "voice_emotion_model.pt"),
-        str(MODELS_DIR / "voice_scaler.pkl"),
-        str(MODELS_DIR / "voice_model_config.json"),
+        str(MODELS_DIR / "best_voice_model.pth"),
     )
 
     print("[ML Service] ✅ Facial model loaded")
@@ -154,8 +152,8 @@ async def predict_voice(file: UploadFile = File(...)):
     output_path = None
 
     try:
-        input_path = Path("ml-service") / f"temp_input_{time.time_ns()}.webm"
-        output_path = Path("ml-service") / f"temp_output_{time.time_ns()}.wav"
+        input_path = BASE_DIR / f"temp_input_{time.time_ns()}.webm"
+        output_path = BASE_DIR / f"temp_output_{time.time_ns()}.wav"
 
         input_path.write_bytes(audio_bytes)
 
@@ -371,3 +369,12 @@ def fuse_emotions(request: FusionRequest):
             "success": False,
             "error": str(e),
         }
+        
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000
+    )
