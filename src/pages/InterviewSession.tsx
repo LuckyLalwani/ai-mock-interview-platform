@@ -23,10 +23,14 @@ import AIInterviewerAvatar from '@/components/AIInterviewerAvatar';
 import {
   predictFace,
   predictVoice,
+  predictText,
   fuseEmotions,
+  registerProctorFace,
+  verifyProctorFace,
   type EmotionPrediction,
   type FusionResult,
-} from '@/lib/emotion';
+  type ProctorResult,
+} from '../lib/emotion';
 
 
 interface SpeechRecognitionEvent extends Event {
@@ -86,8 +90,29 @@ const [faceEmotion, setFaceEmotion] =
 const [voiceEmotion, setVoiceEmotion] =
   useState<EmotionPrediction | null>(null);
 
+const [textEmotion, setTextEmotion] =
+  useState<EmotionPrediction | null>(null);
+
 const [fusionResult, setFusionResult] =
   useState<FusionResult | null>(null);
+
+const [proctorResult, setProctorResult] =
+  useState<ProctorResult | null>(null);
+
+const [proctorRegistered, setProctorRegistered] =
+  useState(false);
+
+const [proctorViolations, setProctorViolations] =
+  useState(0);
+
+const [consecutiveNoFace, setConsecutiveNoFace] =
+  useState(0);
+
+const [consecutiveIdentityMismatch, setConsecutiveIdentityMismatch] =
+  useState(0);
+
+const [consecutiveMultipleFaces, setConsecutiveMultipleFaces] =
+  useState(0);
 
 const [isRecordingVoice, setIsRecordingVoice] =
   useState(false);
@@ -308,9 +333,10 @@ useEffect(() => {
   const runFusion = async () => {
     try {
       const result = await fuseEmotions(
-        faceEmotion.predictions!,
-        voiceEmotion.predictions!
-      );
+  faceEmotion?.predictions ?? null,
+  voiceEmotion?.predictions ?? null,
+  textEmotion?.predictions ?? null
+);
 
       if (result.success) {
         setFusionResult(result);
@@ -327,6 +353,7 @@ useEffect(() => {
 }, [
   faceEmotion,
   voiceEmotion,
+  textEmotion,
 ]);
   const stopVoiceEmotionRecording = useCallback(() => {
   const recorder = mediaRecorderRef.current;
@@ -654,6 +681,294 @@ useEffect(() => {
   }
 }, [cameraStreamActive]);
 
+const registerCandidateFace = useCallback(async () => {
+  if (!videoRef.current || !cameraStreamActive || proctorRegistered) {
+    return;
+  }
+
+  const video = videoRef.current;
+
+  if (video.readyState < 2) {
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    return;
+  }
+
+  context.drawImage(
+    video,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, 'image/jpeg', 0.9);
+  });
+
+  if (!blob) {
+    return;
+  }
+
+  try {
+    // Register candidate face
+    const result = await registerProctorFace(blob);
+
+    console.log('Proctor registration result:', result);
+
+    if (result.success && result.status === 'VERIFIED') {
+      setProctorRegistered(true);
+      setProctorResult({
+        status: 'VERIFIED',
+        similarity: result.similarity,
+        faces_detected: result.faces_detected,
+        is_match: result.is_match,
+        message: result.message,
+      });
+    } else {
+      setProctorResult({
+        status: result.status,
+        similarity: result.similarity,
+        faces_detected: result.faces_detected,
+        is_match: result.is_match,
+        message: result.message,
+      });
+    }
+  } catch (registrationError) {
+    console.error(
+      'Proctor registration error:',
+      registrationError
+    );
+  }
+}, [
+  cameraStreamActive,
+  proctorRegistered,
+]);
+
+useEffect(() => {
+  if (!cameraEnabled || !cameraStreamActive || proctorRegistered) {
+    return;
+  }
+
+  const timer = window.setTimeout(() => {
+    registerCandidateFace();
+  }, 1500);
+
+  return () => {
+    window.clearTimeout(timer);
+  };
+}, [
+  cameraEnabled,
+  cameraStreamActive,
+  proctorRegistered,
+  registerCandidateFace,
+]);
+useEffect(() => {
+  if (
+    !cameraEnabled ||
+    !cameraStreamActive ||
+    !proctorRegistered
+  ) {
+    return;
+  }
+
+  const interval = window.setInterval(async () => {
+    console.log('Proctor interval tick');
+
+    if (!videoRef.current) {
+      return;
+    }
+
+    const video = videoRef.current;
+
+    if (video.readyState < 2) {
+      return;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      return;
+    }
+
+    context.drawImage(
+      video,
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/jpeg', 0.85);
+    });
+
+    if (!blob) {
+      return;
+    }
+
+    try {
+      // Verify the current face against the registered candidate
+      const result = await verifyProctorFace(blob);
+
+      console.log('Proctor verification result:', result);
+
+      setProctorResult(result);
+
+      // Count consecutive violations
+      if (result.status === 'VERIFIED') {
+        setConsecutiveNoFace(0);
+        setConsecutiveIdentityMismatch(0);
+        setConsecutiveMultipleFaces(0);
+      } else if (result.status === 'NO_FACE') {
+        setConsecutiveNoFace((previous) => {
+  const next = previous + 1;
+
+  if (next >= 3) {
+    setProctorViolations((count) => count + 1);
+
+    if (id) {
+      supabase
+        .from('interview_proctor_events')
+        .insert({
+          interview_id: id,
+          status: 'VIOLATION',
+          similarity: result.similarity ?? null,
+          faces_detected: result.faces_detected ?? null,
+          is_match: result.is_match ?? null,
+          message: 'Three consecutive NO_FACE checks detected.',
+        })
+        .then(({ error }) => {
+          if (error) {
+            console.error('Violation event save error:', error);
+          }
+        });
+    }
+
+    return 0;
+  }
+
+  return next;
+});
+
+        setConsecutiveIdentityMismatch(0);
+        setConsecutiveMultipleFaces(0);
+      } else if (result.status === 'UNAUTHORIZED_FACE') {
+        setConsecutiveIdentityMismatch((previous) => {
+  const next = previous + 1;
+
+  if (next >= 3) {
+    setProctorViolations((count) => count + 1);
+
+    if (id) {
+      supabase
+        .from('interview_proctor_events')
+        .insert({
+          interview_id: id,
+          status: 'VIOLATION',
+          similarity: result.similarity ?? null,
+          faces_detected: result.faces_detected ?? null,
+          is_match: result.is_match ?? null,
+          message: 'Three consecutive UNAUTHORIZED_FACE checks detected.',
+        })
+        .then(({ error }) => {
+          if (error) {
+            console.error('Violation event save error:', error);
+          }
+        });
+    }
+
+    return 0;
+  }
+
+  return next;
+});
+
+        setConsecutiveNoFace(0);
+        setConsecutiveMultipleFaces(0);
+      } else if (result.status === 'MULTIPLE_FACES') {
+        setConsecutiveMultipleFaces((previous) => {
+  const next = previous + 1;
+
+  if (next >= 3) {
+    setProctorViolations((count) => count + 1);
+
+    if (id) {
+      supabase
+        .from('interview_proctor_events')
+        .insert({
+          interview_id: id,
+          status: 'VIOLATION',
+          similarity: result.similarity ?? null,
+          faces_detected: result.faces_detected ?? null,
+          is_match: result.is_match ?? null,
+          message: 'Three consecutive MULTIPLE_FACES checks detected.',
+        })
+        .then(({ error }) => {
+          if (error) {
+            console.error('Violation event save error:', error);
+          }
+        });
+    }
+
+    return 0;
+  }
+
+  return next;
+});
+
+        setConsecutiveNoFace(0);
+        setConsecutiveIdentityMismatch(0);
+      }
+
+      // Persist proctoring event
+      if (id) {
+        const { error: proctorSaveError } = await supabase
+          .from('interview_proctor_events')
+          .insert({
+            interview_id: id,
+            status: result.status,
+            similarity: result.similarity ?? null,
+            faces_detected: result.faces_detected ?? null,
+            is_match: result.is_match ?? null,
+            message: result.message ?? null,
+          });
+
+        if (proctorSaveError) {
+          console.error(
+            'Proctor event save error:',
+            proctorSaveError
+          );
+        }
+      }
+    } catch (proctorError) {
+      console.error(
+        'Proctor verification error:',
+        proctorError
+      );
+    }
+  }, 10000);
+
+  return () => {
+    window.clearInterval(interval);
+  };
+}, [
+  cameraEnabled,
+  cameraStreamActive,
+  proctorRegistered,
+]);
   useEffect(() => {
   if (!cameraEnabled || !cameraStreamActive) {
     return;
@@ -713,6 +1028,40 @@ useEffect(() => {
   async (questionId: string, answerText: string) => {
     const trimmedAnswer = answerText.trim();
 
+    let currentTextEmotion: EmotionPrediction | null = null;
+    let currentFusionResult: FusionResult | null = fusionResult;
+
+    if (trimmedAnswer) {
+      try {
+        const result = await predictText(trimmedAnswer);
+
+        if (result.success) {
+  currentTextEmotion = result;
+  setTextEmotion(result);
+
+  try {
+    const fusion = await fuseEmotions(
+      faceEmotion?.predictions ?? null,
+      voiceEmotion?.predictions ?? null,
+      result.predictions ?? null
+    );
+
+    if (fusion.success) {
+      currentFusionResult = fusion;
+      setFusionResult(fusion);
+    }
+  } catch (fusionError) {
+    console.error('Answer fusion error:', fusionError);
+  }
+}
+      } catch (textEmotionError) {
+        console.error(
+          'Text emotion prediction error:',
+          textEmotionError
+        );
+      }
+    }
+
     const { error: saveError } = await supabase
       .from('interview_questions')
       .update({
@@ -725,7 +1074,8 @@ useEffect(() => {
         // Emotion analysis captured for this answer
         face_emotion: faceEmotion,
         voice_emotion: voiceEmotion,
-        fusion_result: fusionResult,
+        text_emotion: currentTextEmotion,
+        fusion_result: currentFusionResult,
       })
       .eq('id', questionId);
 
@@ -983,35 +1333,75 @@ useEffect(() => {
 
             try {
               // Save voice answers
-              const updatePromises = questions.map((q) => {
-                const ans = voiceAnswers[q.id] ?? '';
-                const trimmedAnswer = ans.trim();
+              // Save voice answers with text emotion + multimodal fusion
+const updatePromises = questions.map(async (q) => {
+  const ans = voiceAnswers[q.id] ?? '';
+  const trimmedAnswer = ans.trim();
 
-                return supabase
-                  .from('interview_questions')
-                  .update({
-                    answer_text: ans,
-                    answer_status: trimmedAnswer
-                      ? 'answered'
-                      : 'unanswered',
-                    answered_at: trimmedAnswer
-                      ? new Date().toISOString()
-                      : null,
-                  })
-                  .eq('id', q.id);
-              });
+  let textEmotion = null;
+  let currentFusionResult = null;
 
-              const results = await Promise.all(updatePromises);
+  if (trimmedAnswer) {
+    try {
+      const textResult = await predictText(trimmedAnswer);
 
-              const failedUpdate = results.find(
-                (result) => result.error
-              );
+      if (textResult.success) {
+        textEmotion = textResult;
 
-              if (failedUpdate?.error) {
-                throw new Error(
-                  'Failed to save voice answers.'
-                );
-              }
+        try {
+          const fusion = await fuseEmotions(
+            faceEmotion?.predictions ?? null,
+            voiceEmotion?.predictions ?? null,
+            textResult.predictions ?? null
+          );
+
+          if (fusion.success) {
+            currentFusionResult = fusion;
+          }
+        } catch (fusionError) {
+          console.error(
+            'Voice answer fusion error:',
+            fusionError
+          );
+        }
+      }
+    } catch (textEmotionError) {
+      console.error(
+        'Voice answer text emotion error:',
+        textEmotionError
+      );
+    }
+  }
+
+  return supabase
+    .from('interview_questions')
+    .update({
+      answer_text: ans,
+      answer_status: trimmedAnswer
+        ? 'answered'
+        : 'unanswered',
+      answered_at: trimmedAnswer
+        ? new Date().toISOString()
+        : null,
+      face_emotion: faceEmotion,
+      voice_emotion: voiceEmotion,
+      text_emotion: textEmotion,
+      fusion_result: currentFusionResult,
+    })
+    .eq('id', q.id);
+});
+
+const results = await Promise.all(updatePromises);
+
+const failedUpdate = results.find(
+  (result) => result.error
+);
+
+if (failedUpdate?.error) {
+  throw new Error(
+    'Failed to save voice answers.'
+  );
+}
 
               // Stop camera if active
               stopCamera();
@@ -1140,6 +1530,66 @@ useEffect(() => {
                     Live
                   </span>
                 )}
+                {cameraStreamActive && (
+  <span
+    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide ${
+      proctorViolations === 0
+        ? 'bg-gray-100 text-gray-600'
+        : 'bg-error-50 text-error-700'
+    }`}
+  >
+    <span
+      className={`h-2 w-2 rounded-full ${
+        proctorViolations === 0
+          ? 'bg-gray-400'
+          : 'bg-error-500'
+      }`}
+    />
+
+    {proctorViolations === 0
+      ? 'No violations'
+      : `${proctorViolations} violation${
+          proctorViolations === 1 ? '' : 's'
+        }`}
+  </span>
+)}
+                {cameraStreamActive && (
+  <span
+    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide ${
+      !proctorResult
+        ? 'bg-gray-100 text-gray-600'
+        : proctorResult.status === 'VERIFIED'
+        ? 'bg-green-50 text-green-700'
+        : proctorResult.status === 'NO_FACE'
+        ? 'bg-yellow-50 text-yellow-700'
+        : 'bg-error-50 text-error-700'
+    }`}
+  >
+    <span
+      className={`h-2 w-2 rounded-full ${
+        !proctorResult
+          ? 'bg-gray-400'
+          : proctorResult.status === 'VERIFIED'
+          ? 'bg-green-500'
+          : proctorResult.status === 'NO_FACE'
+          ? 'bg-yellow-500'
+          : 'bg-error-500'
+      }`}
+    />
+
+    {!proctorResult
+      ? 'Checking...'
+      : proctorResult.status === 'VERIFIED'
+      ? 'Identity verified'
+      : proctorResult.status === 'NO_FACE'
+      ? 'No face detected'
+      : proctorResult.status === 'UNAUTHORIZED_FACE'
+      ? 'Identity mismatch'
+      : proctorResult.status === 'MULTIPLE_FACES'
+      ? 'Multiple faces detected'
+      : 'Proctoring error'}
+  </span>
+)}
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -1278,12 +1728,39 @@ useEffect(() => {
     </div>
   </div>
 )}
+{textEmotion?.success && textEmotion.emotion && (
+  <div className="mt-4 rounded-xl border border-green-100 bg-green-50 p-4">
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-green-600">
+          Text Emotion
+        </p>
+
+        <p className="mt-1 text-lg font-semibold capitalize text-gray-900">
+          {textEmotion.emotion}
+        </p>
+      </div>
+
+      {typeof textEmotion.confidence === 'number' && (
+        <div className="text-right">
+          <p className="text-xs text-gray-500">
+            Confidence
+          </p>
+
+          <p className="text-sm font-semibold text-gray-700">
+            {(textEmotion.confidence * 100).toFixed(1)}%
+          </p>
+        </div>
+      )}
+    </div>
+  </div>
+)}
 {fusionResult?.success && (
   <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
     <div className="mb-3 flex items-center justify-between">
       <div>
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Emotion Analysis
+          Multimodal Emotion Analysis
         </p>
 
         {fusionResult.dominant_emotion && (
@@ -1292,49 +1769,93 @@ useEffect(() => {
           </p>
         )}
       </div>
+
+      {typeof fusionResult.overall_score === 'number' && (
+        <div className="text-right">
+          <p className="text-xs text-gray-500">
+            Overall Score
+          </p>
+
+          <p className="text-2xl font-bold text-primary-600">
+            {fusionResult.overall_score.toFixed(1)}
+          </p>
+        </div>
+      )}
     </div>
 
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <div className="rounded-lg bg-error-50 p-3">
-        <p className="text-xs text-gray-500">
-          Stress
-        </p>
+    {fusionResult.behavioral_metrics && (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div className="rounded-lg bg-error-50 p-3">
+          <p className="text-xs text-gray-500">Stress</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.stress.toFixed(1)}
+          </p>
+        </div>
 
-        <p className="mt-1 text-lg font-semibold text-gray-900">
-          {fusionResult.stress_score?.toFixed(1) ?? '--'}
-        </p>
+        <div className="rounded-lg bg-primary-50 p-3">
+          <p className="text-xs text-gray-500">Nervousness</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.nervousness.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-accent-50 p-3">
+          <p className="text-xs text-gray-500">Confidence</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.confidence.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Fluency</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.fluency.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Composure</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.composure.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Engagement</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.engagement.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Stability</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.stability.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Recovery</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.recovery.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Frustration</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.frustration.toFixed(1)}
+          </p>
+        </div>
+
+        <div className="rounded-lg bg-gray-50 p-3">
+          <p className="text-xs text-gray-500">Adaptability</p>
+          <p className="mt-1 text-lg font-semibold text-gray-900">
+            {fusionResult.behavioral_metrics.adaptability.toFixed(1)}
+          </p>
+        </div>
       </div>
-
-      <div className="rounded-lg bg-primary-50 p-3">
-        <p className="text-xs text-gray-500">
-          Anxiety
-        </p>
-
-        <p className="mt-1 text-lg font-semibold text-gray-900">
-          {fusionResult.anxiety_score?.toFixed(1) ?? '--'}
-        </p>
-      </div>
-
-      <div className="rounded-lg bg-accent-50 p-3">
-        <p className="text-xs text-gray-500">
-          Nervousness
-        </p>
-
-        <p className="mt-1 text-lg font-semibold text-gray-900">
-          {fusionResult.nervousness_score?.toFixed(1) ?? '--'}
-        </p>
-      </div>
-
-      <div className="rounded-lg bg-gray-50 p-3">
-        <p className="text-xs text-gray-500">
-          Confidence
-        </p>
-
-        <p className="mt-1 text-lg font-semibold text-gray-900">
-          {fusionResult.confidence_score?.toFixed(1) ?? '--'}
-        </p>
-      </div>
-    </div>
+    )}
   </div>
 )}
     {/* Camera controls */}
@@ -1388,9 +1909,14 @@ useEffect(() => {
               </span>
             </div>
 
-            <h2 className="text-xl font-semibold leading-relaxed text-gray-900 sm:text-2xl">
-              {currentQ.question_text}
-            </h2>
+            <h2
+  className="select-none text-xl font-semibold leading-relaxed text-gray-900 sm:text-2xl"
+  onCopy={(e) => e.preventDefault()}
+  onCut={(e) => e.preventDefault()}
+  onContextMenu={(e) => e.preventDefault()}
+>
+  {currentQ.question_text}
+</h2>
 
             <div className="mt-6">
               <label

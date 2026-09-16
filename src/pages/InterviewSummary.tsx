@@ -26,7 +26,7 @@ export default function InterviewSummary() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedQ, setExpandedQ] = useState<number | null>(null);
-
+  const [proctorEvents, setProctorEvents] = useState<any[]>([]);
   useEffect(() => {
     async function loadData() {
       if (!id) {
@@ -70,6 +70,19 @@ export default function InterviewSummary() {
         if (questionData) {
           setQuestions(questionData as InterviewQuestion[]);
         }
+        const { data: proctorData, error: proctorError } = await supabase
+          .from('interview_proctor_events')
+          .select('*')
+          .eq('interview_id', id)
+          .order('created_at', { ascending: true });
+
+        if (proctorError) {
+          console.error('Failed to load proctor events:', proctorError);
+        }
+
+        if (proctorData) {
+          setProctorEvents(proctorData);
+        }
       } catch (err) {
         console.error('Summary loading error:', err);
         setError('Something went wrong while loading the interview.');
@@ -80,7 +93,27 @@ export default function InterviewSummary() {
 
     loadData();
   }, [id]);
+const totalProctorChecks = proctorEvents.length;
 
+const verifiedChecks = proctorEvents.filter(
+  (event) => event.status === 'VERIFIED'
+).length;
+
+const noFaceEvents = proctorEvents.filter(
+  (event) => event.status === 'NO_FACE'
+).length;
+
+const identityMismatchEvents = proctorEvents.filter(
+  (event) => event.status === 'UNAUTHORIZED_FACE'
+).length;
+
+const multipleFaceEvents = proctorEvents.filter(
+  (event) => event.status === 'MULTIPLE_FACES'
+).length;
+
+const proctorViolationCount = proctorEvents.filter(
+  (event) => event.status === 'VIOLATION'
+).length;
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -163,36 +196,57 @@ export default function InterviewSummary() {
       typeof q.fusion_result === 'object'
   );
 
-  const averageEmotionScore = (
-    key:
-      | 'stress_score'
-      | 'anxiety_score'
-      | 'nervousness_score'
-      | 'confidence_score'
-  ) => {
-    const values = emotionQuestions
-      .map((q) => {
-        const fusion = q.fusion_result as Record<string, unknown>;
-        const value = fusion[key];
+  const averageEmotionMetric = (
+  key:
+    | 'stress'
+    | 'nervousness'
+    | 'confidence'
+    | 'fluency'
+    | 'composure'
+    | 'engagement'
+    | 'stability'
+    | 'recovery'
+    | 'frustration'
+    | 'adaptability'
+) => {
+  const values = emotionQuestions
+    .map((q) => {
+      const fusion = q.fusion_result as Record<string, unknown>;
+      const metrics = fusion.behavioral_metrics;
 
-        return typeof value === 'number' ? value : null;
-      })
-      .filter((value): value is number => value !== null);
+      if (!metrics || typeof metrics !== 'object') {
+        return null;
+      }
 
-    if (values.length === 0) return null;
+      const value = (metrics as Record<string, unknown>)[key];
 
-    return (
-      values.reduce((sum, value) => sum + value, 0) /
-      values.length
-    );
-  };
+      return typeof value === 'number' ? value : null;
+    })
+    .filter((value): value is number => value !== null);
 
-  const averageStress = averageEmotionScore('stress_score');
-  const averageAnxiety = averageEmotionScore('anxiety_score');
-  const averageNervousness =
-    averageEmotionScore('nervousness_score');
-  const averageConfidence =
-    averageEmotionScore('confidence_score');
+  if (values.length === 0) return null;
+
+  return (
+    values.reduce((sum, value) => sum + value, 0) /
+    values.length
+  );
+};
+
+const averageStress = averageEmotionMetric('stress');
+const averageNervousness =
+  averageEmotionMetric('nervousness');
+const averageConfidence =
+  averageEmotionMetric('confidence');
+
+const averageFluency = averageEmotionMetric('fluency');
+const averageComposure = averageEmotionMetric('composure');
+const averageEngagement = averageEmotionMetric('engagement');
+const averageStability = averageEmotionMetric('stability');
+const averageRecovery = averageEmotionMetric('recovery');
+const averageFrustration =
+  averageEmotionMetric('frustration');
+const averageAdaptability =
+  averageEmotionMetric('adaptability');
 
   const dominantEmotions = emotionQuestions
     .map((q) => {
@@ -356,54 +410,178 @@ export default function InterviewSummary() {
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg bg-error-50 p-4">
-              <p className="text-xs text-gray-500">Stress</p>
-              <p className="mt-1 text-xl font-bold text-gray-900">
-                {averageStress !== null
-                  ? averageStress.toFixed(1)
-                  : '—'}
-              </p>
-            </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+  <div className="rounded-lg bg-error-50 p-4">
+    <p className="text-xs text-gray-500">Stress</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageStress !== null ? averageStress.toFixed(1) : '—'}
+    </p>
+  </div>
 
-            <div className="rounded-lg bg-primary-50 p-4">
-              <p className="text-xs text-gray-500">Anxiety</p>
-              <p className="mt-1 text-xl font-bold text-gray-900">
-                {averageAnxiety !== null
-                  ? averageAnxiety.toFixed(1)
-                  : '—'}
-              </p>
-            </div>
+  <div className="rounded-lg bg-accent-50 p-4">
+    <p className="text-xs text-gray-500">Nervousness</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageNervousness !== null
+        ? averageNervousness.toFixed(1)
+        : '—'}
+    </p>
+  </div>
 
-            <div className="rounded-lg bg-accent-50 p-4">
-              <p className="text-xs text-gray-500">
-                Nervousness
-              </p>
-              <p className="mt-1 text-xl font-bold text-gray-900">
-                {averageNervousness !== null
-                  ? averageNervousness.toFixed(1)
-                  : '—'}
-              </p>
-            </div>
+  <div className="rounded-lg bg-gray-50 p-4">
+    <p className="text-xs text-gray-500">Confidence</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageConfidence !== null
+        ? averageConfidence.toFixed(1)
+        : '—'}
+    </p>
+  </div>
 
-            <div className="rounded-lg bg-gray-50 p-4">
-              <p className="text-xs text-gray-500">
-                Confidence
-              </p>
-              <p className="mt-1 text-xl font-bold text-gray-900">
-                {averageConfidence !== null
-                  ? averageConfidence.toFixed(1)
-                  : '—'}
-              </p>
-            </div>
-          </div>
+  <div className="rounded-lg bg-primary-50 p-4">
+    <p className="text-xs text-gray-500">Fluency</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageFluency !== null
+        ? averageFluency.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-success-50 p-4">
+    <p className="text-xs text-gray-500">Composure</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageComposure !== null
+        ? averageComposure.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-primary-50 p-4">
+    <p className="text-xs text-gray-500">Engagement</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageEngagement !== null
+        ? averageEngagement.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-gray-50 p-4">
+    <p className="text-xs text-gray-500">Stability</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageStability !== null
+        ? averageStability.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-success-50 p-4">
+    <p className="text-xs text-gray-500">Recovery</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageRecovery !== null
+        ? averageRecovery.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-error-50 p-4">
+    <p className="text-xs text-gray-500">Frustration</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageFrustration !== null
+        ? averageFrustration.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+
+  <div className="rounded-lg bg-warning-50 p-4">
+    <p className="text-xs text-gray-500">Adaptability</p>
+    <p className="mt-1 text-xl font-bold text-gray-900">
+      {averageAdaptability !== null
+        ? averageAdaptability.toFixed(1)
+        : '—'}
+    </p>
+  </div>
+</div>
 
           <p className="mt-4 text-xs text-gray-400">
-            Based on emotion analysis captured during your
-            camera-enabled answers.
+            Based on multimodal emotion analysis from your interview responses.
           </p>
         </div>
       )}
+      {/* Proctoring Analysis */}
+<div className="card mt-6 p-6">
+  <div className="mb-4">
+    <p className="text-xs font-semibold uppercase tracking-wide text-primary-600">
+      Proctoring Analysis
+    </p>
+
+    <h2 className="mt-1 text-base font-semibold text-gray-900">
+      Interview integrity
+    </h2>
+
+    <p className="mt-1 text-sm text-gray-500">
+      Webcam verification results recorded during the interview.
+    </p>
+  </div>
+
+  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+    <div className="rounded-lg bg-gray-50 p-4">
+      <p className="text-xs text-gray-500">
+        Total Checks
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {totalProctorChecks}
+      </p>
+    </div>
+
+    <div className="rounded-lg bg-green-50 p-4">
+      <p className="text-xs text-gray-500">
+        Verified
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {verifiedChecks}
+      </p>
+    </div>
+
+    <div className="rounded-lg bg-error-50 p-4">
+      <p className="text-xs text-gray-500">
+        Violations
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {proctorViolationCount}
+      </p>
+    </div>
+
+    <div className="rounded-lg bg-yellow-50 p-4">
+      <p className="text-xs text-gray-500">
+        No Face
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {noFaceEvents}
+      </p>
+    </div>
+
+    <div className="rounded-lg bg-orange-50 p-4">
+      <p className="text-xs text-gray-500">
+        Identity Mismatch
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {identityMismatchEvents}
+      </p>
+    </div>
+
+    <div className="rounded-lg bg-primary-50 p-4">
+      <p className="text-xs text-gray-500">
+        Multiple Faces
+      </p>
+      <p className="mt-1 text-xl font-bold text-gray-900">
+        {multipleFaceEvents}
+      </p>
+    </div>
+  </div>
+
+  <p className="mt-4 text-xs text-gray-400">
+    Proctoring checks are performed periodically while the
+    camera is active.
+  </p>
+</div>
 
       {/* Overall AI Feedback */}
       {overallFeedback && (

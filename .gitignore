@@ -173,3 +173,4 @@ ml-service/models/*.safetensors
 ml-service/models/*.pkl
 
 ml-service/models/text_emotion_model/model.safetensors
+ml-service/models/text/
