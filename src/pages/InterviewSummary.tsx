@@ -114,6 +114,18 @@ const multipleFaceEvents = proctorEvents.filter(
 const proctorViolationCount = proctorEvents.filter(
   (event) => event.status === 'VIOLATION'
 ).length;
+const terminationEvent = proctorEvents.find(
+  (event) =>
+    event.status === 'FULLSCREEN_EXIT' ||
+    event.status === 'TAB_SWITCH'
+);
+
+const terminationReason =
+  terminationEvent?.status === 'FULLSCREEN_EXIT'
+    ? 'Fullscreen Exit'
+    : terminationEvent?.status === 'TAB_SWITCH'
+      ? 'Tab Switch'
+      : null;
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -582,7 +594,17 @@ const averageAdaptability =
     camera is active.
   </p>
 </div>
+{terminationReason && (
+  <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+    <div className="text-sm font-medium text-red-400">
+      Interview Terminated
+    </div>
 
+    <div className="mt-1 text-sm text-gray-500">
+      Reason: {terminationReason}
+    </div>
+  </div>
+)}
       {/* Overall AI Feedback */}
       {overallFeedback && (
         <div className="card mt-6 p-6">

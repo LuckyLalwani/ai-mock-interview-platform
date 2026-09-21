@@ -105,6 +105,7 @@ const [proctorRegistered, setProctorRegistered] =
 const [proctorViolations, setProctorViolations] =
   useState(0);
 
+const [isFullscreen, setIsFullscreen] = useState(false);
 const [consecutiveNoFace, setConsecutiveNoFace] =
   useState(0);
 
@@ -140,6 +141,63 @@ const transcriptRef = useRef('');
   const streamRef = useRef<MediaStream | null>(null);
   const startTimeRef = useRef<number>(0);
   const answerRef = useRef('');
+  const handleEndRef = useRef<(() => Promise<void>) | null>(null);
+  const terminationReasonRef = useRef<string | null>(null);
+  const enterFullscreen = useCallback(async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+    }
+
+    setIsFullscreen(true);
+  } catch (fullscreenError) {
+    console.error('Fullscreen request failed:', fullscreenError);
+    setIsFullscreen(false);
+  }
+}, []);
+useEffect(() => {
+  const handleFullscreenChange = () => {
+    const fullscreen = Boolean(document.fullscreenElement);
+
+    setIsFullscreen(fullscreen);
+
+    if (
+  !fullscreen &&
+  !document.hidden &&
+  handleEndRef.current &&
+  !ending
+) {
+  terminationReasonRef.current = 'FULLSCREEN_EXIT';
+  handleEndRef.current();
+}
+  };
+
+  document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+  return () => {
+    document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  };
+}, [ending]);
+
+
+
+useEffect(() => {
+  const handleVisibilityChange = () => {
+    if (document.hidden && handleEndRef.current && !ending) {
+      terminationReasonRef.current = 'TAB_SWITCH';
+      handleEndRef.current();
+    }
+  };
+
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+
+  return () => {
+    document.removeEventListener(
+      'visibilitychange',
+      handleVisibilityChange
+    );
+  };
+}, [ending]);
 
   useEffect(() => {
     answerRef.current = answer;
@@ -959,7 +1017,7 @@ useEffect(() => {
         proctorError
       );
     }
-  }, 10000);
+  }, 5000);
 
   return () => {
     window.clearInterval(interval);
@@ -1211,7 +1269,25 @@ useEffect(() => {
       window.speechSynthesis.cancel();
       // Stop camera before leaving the interview
       stopCamera();
+      if (terminationReasonRef.current) {
+  const reason = terminationReasonRef.current;
 
+  await supabase
+    .from('interview_proctor_events')
+    .insert({
+      interview_id: id,
+      status: reason,
+      similarity: null,
+      faces_detected: null,
+      is_match: null,
+      message:
+        reason === 'FULLSCREEN_EXIT'
+          ? 'Interview terminated because fullscreen mode was exited.'
+          : 'Interview terminated because the interview tab lost visibility.',
+    });
+
+  terminationReasonRef.current = null;
+}
       // Calculate interview duration
       const durationSeconds = Math.floor(
         (Date.now() - startTimeRef.current) / 1000
@@ -1255,6 +1331,7 @@ useEffect(() => {
       setEnding(false);
     }
   };
+  handleEndRef.current = handleEnd;
 
   if (loading) {
     return (
@@ -1317,6 +1394,27 @@ useEffect(() => {
 
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-gray-50 animate-fade-in">
+    {!isFullscreen && (
+  <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black">
+    <div className="max-w-md px-6 text-center text-white">
+      <h2 className="mb-3 text-2xl font-semibold">
+        Enter Fullscreen Mode
+      </h2>
+
+      <p className="mb-6 text-gray-400">
+        This interview must be completed in fullscreen mode.
+        Please enter fullscreen to continue.
+      </p>
+
+      <button
+        onClick={enterFullscreen}
+        className="rounded-lg bg-blue-600 px-6 py-3 font-medium text-white transition hover:bg-blue-700"
+      >
+        Enter Fullscreen
+      </button>
+    </div>
+  </div>
+)}
       {voiceMode && (
         <VoiceInterviewModal
           questions={questions.map((q) => ({
